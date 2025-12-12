@@ -11,6 +11,7 @@ A modular, flexible rate limiting plugin for [Frame-Master](https://frame-master
 - 📊 **Standard headers** - `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`
 - ⏭️ **Skip routes** - Exclude health checks, static files, webhooks
 - 🎨 **Custom responses** - Configurable message, status code, or handler
+- 🔄 **Reset functionality** - Reset rate limits programmatically
 
 ## Installation
 
@@ -289,6 +290,62 @@ if (result) {
 }
 ```
 
+## Resetting Rate Limits
+
+Reset the rate limit for a user after successful authentication, captcha completion, or other events:
+
+### Reset Current Request
+
+```typescript
+import { resetRateLimit } from "frame-master-plugin-rate-limiter";
+
+// In your auth plugin's request handler
+request: async (master) => {
+  const loginSuccessful = await authenticateUser(master);
+
+  if (loginSuccessful) {
+    // Reset rate limit after successful login
+    resetRateLimit(master);
+  }
+};
+```
+
+### Reset by Specific Key
+
+```typescript
+import {
+  resetRateLimitByKey,
+  getRateLimitKey,
+} from "frame-master-plugin-rate-limiter";
+
+// Admin endpoint to reset rate limit for a user
+request: async (master) => {
+  if (master.URL.pathname === "/admin/reset-rate-limit") {
+    const userId = master.URL.searchParams.get("userId");
+
+    // Reset by user key
+    resetRateLimitByKey(master, `user:${userId}`);
+
+    // Or reset by IP
+    resetRateLimitByKey(master, `ip:192.168.1.100`);
+
+    master.setResponse("Rate limit reset", { status: 200 });
+  }
+};
+```
+
+### Get Current Rate Limit Key
+
+```typescript
+import { getRateLimitKey } from "frame-master-plugin-rate-limiter";
+
+// Debug or log the key being used
+request: async (master) => {
+  const key = getRateLimitKey(master);
+  console.log(`Rate limit key: ${key}`); // e.g., "ip:192.168.1.1" or "user:123"
+};
+```
+
 ## API Reference
 
 ### Exports
@@ -303,6 +360,9 @@ import {
   MemoryStore, // Default in-memory store
   getClientIP, // Utility to extract client IP
   matchRoute, // Utility for URLPattern/regex route matching
+  resetRateLimit, // Reset rate limit for current request
+  resetRateLimitByKey, // Reset rate limit by specific key
+  getRateLimitKey, // Get the rate limit key for current request
 } from "frame-master-plugin-rate-limiter";
 
 // Types
@@ -312,6 +372,7 @@ import type {
   RateLimitEntry,
   RateLimitResult,
   RouteLimit,
+  RateLimitContext, // Context type for accessing rate limit data
 } from "frame-master-plugin-rate-limiter";
 ```
 

@@ -246,18 +246,21 @@ class RateLimiter {
     return skip.some((pattern) => matchRoute(pathname, pattern));
   }
 
-  getLimitForRoute(pathname: string): number {
+  getLimitForRoute(pathname: string): {
+    limit: number;
+    pattern: string | RegExp | null;
+  } {
     const { routeLimits, limit } = this.options;
 
-    if (!routeLimits) return limit;
+    if (!routeLimits) return { limit, pattern: null };
 
     for (const routeLimit of routeLimits) {
       if (matchRoute(pathname, routeLimit.pattern)) {
-        return routeLimit.limit;
+        return { limit: routeLimit.limit, pattern: routeLimit.pattern };
       }
     }
 
-    return limit;
+    return { limit, pattern: null };
   }
 
   getWindowForRoute(pathname: string): number {
@@ -275,11 +278,15 @@ class RateLimiter {
   }
 
   check(master: masterRequest): RateLimitResult {
-    const key = this.options.keyGenerator(master);
+    const baseKey = this.options.keyGenerator(master);
     const pathname = master.URL.pathname;
-    const limit = this.getLimitForRoute(pathname);
+    const { limit, pattern } = this.getLimitForRoute(pathname);
     const windowMs = this.getWindowForRoute(pathname);
     const now = Date.now();
+
+    // Include route pattern in key for route-specific counters
+    const patternKey = pattern ? `:route:${pattern.toString()}` : "";
+    const key = `${baseKey}${patternKey}`;
 
     let entry = this.store.get(key);
 
@@ -346,6 +353,67 @@ class RateLimiter {
     if (this.ownStore) {
       this.ownStore.destroy();
     }
+  }
+
+  /**
+   * Reset rate limit for a specific key (exact match)
+   */
+  reset(key: string): void {
+    this.store.delete(key);
+  }
+
+  /**
+   * Reset rate limit for the current request's route
+   */
+  resetForRequest(master: masterRequest): void {
+    const key = this.getFullKeyForRequest(master);
+    this.reset(key);
+  }
+
+  /**
+   * Reset all rate limits for a base key (all routes)
+   * Useful when you want to reset limits for all routes for a user/IP
+   */
+  resetAllForBaseKey(baseKey: string): void {
+    // For MemoryStore, we can iterate and delete matching keys
+    if (this.ownStore) {
+      const store = (this.ownStore as any).store as Map<string, RateLimitEntry>;
+      for (const key of store.keys()) {
+        if (key === baseKey || key.startsWith(`${baseKey}:route:`)) {
+          store.delete(key);
+        }
+      }
+    } else {
+      // For custom stores, just delete the base key
+      // Custom stores should implement their own prefix-based deletion
+      this.store.delete(baseKey);
+    }
+  }
+
+  /**
+   * Reset all rate limits for the current request's base key (all routes)
+   */
+  resetAllForRequest(master: masterRequest): void {
+    const baseKey = this.options.keyGenerator(master);
+    this.resetAllForBaseKey(baseKey);
+  }
+
+  /**
+   * Get the full key (including route pattern) for a request
+   */
+  getFullKeyForRequest(master: masterRequest): string {
+    const baseKey = this.options.keyGenerator(master);
+    const pathname = master.URL.pathname;
+    const { pattern } = this.getLimitForRoute(pathname);
+    const patternKey = pattern ? `:route:${pattern.toString()}` : "";
+    return `${baseKey}${patternKey}`;
+  }
+
+  /**
+   * Get the base key (without route pattern) for a request
+   */
+  getBaseKeyForRequest(master: masterRequest): string {
+    return this.options.keyGenerator(master);
   }
 }
 
@@ -421,7 +489,14 @@ export default function rateLimiter(
         limiter.applyHeaders(master, result);
 
         // Store result in context for the request hook and other plugins
-        master.setContext({ __rateLimitResult: result });
+        master.setContext({
+          __rateLimitResult: result,
+          __rateLimitReset: () => limiter.resetForRequest(master),
+          __rateLimitResetAll: () => limiter.resetAllForRequest(master),
+          __rateLimitResetByKey: (key: string) => limiter.reset(key),
+          __rateLimitKey: limiter.getFullKeyForRequest(master),
+          __rateLimitBaseKey: limiter.getBaseKeyForRequest(master),
+        });
       },
 
       request: async (master) => {
@@ -457,3 +532,105 @@ export default function rateLimiter(
 
 // Export types and utilities for custom implementations
 export { RateLimiter, MemoryStore, getClientIP, matchRoute };
+
+/**
+ * Context type for accessing rate limit functions in other plugins
+ */
+export interface RateLimitContext {
+  __rateLimitResult?: RateLimitResult;
+  __rateLimitSkipped?: boolean;
+  __rateLimitReset?: () => void;
+  __rateLimitResetAll?: () => void;
+  __rateLimitResetByKey?: (key: string) => void;
+  __rateLimitKey?: string;
+  __rateLimitBaseKey?: string;
+}
+
+/**
+ * Reset the rate limit for the current request's route.
+ * Call this after successful authentication, captcha completion, etc.
+ *
+ * @example
+ * ```typescript
+ * import { resetRateLimit } from "frame-master-plugin-rate-limiter";
+ *
+ * // In your auth plugin's request handler
+ * if (loginSuccessful) {
+ *   resetRateLimit(master);
+ * }
+ * ```
+ */
+export function resetRateLimit(master: masterRequest): boolean {
+  const ctx = master.getContext<RateLimitContext>();
+  if (ctx.__rateLimitReset) {
+    ctx.__rateLimitReset();
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Reset all rate limits for the current request (all routes).
+ * Useful when you want to reset limits for all routes for the current user/IP.
+ *
+ * @example
+ * ```typescript
+ * import { resetAllRateLimits } from "frame-master-plugin-rate-limiter";
+ *
+ * // Reset all route limits for the current user
+ * resetAllRateLimits(master);
+ * ```
+ */
+export function resetAllRateLimits(master: masterRequest): boolean {
+  const ctx = master.getContext<RateLimitContext>();
+  if (ctx.__rateLimitResetAll) {
+    ctx.__rateLimitResetAll();
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Reset the rate limit for a specific key (exact match).
+ * Use the full key including route pattern for route-specific resets.
+ *
+ * @example
+ * ```typescript
+ * import { resetRateLimitByKey } from "frame-master-plugin-rate-limiter";
+ *
+ * // Reset rate limit for a specific route
+ * resetRateLimitByKey(master, "ip:192.168.1.1:route:/protected**");
+ *
+ * // Reset base key (no route pattern)
+ * resetRateLimitByKey(master, "ip:192.168.1.1");
+ * ```
+ */
+export function resetRateLimitByKey(
+  master: masterRequest,
+  key: string
+): boolean {
+  const ctx = master.getContext<RateLimitContext>();
+  if (ctx.__rateLimitResetByKey) {
+    ctx.__rateLimitResetByKey(key);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Get the full rate limit key for the current request (includes route pattern).
+ * Example: "ip:192.168.1.1:route:/protected**"
+ */
+export function getRateLimitKey(master: masterRequest): string | undefined {
+  const ctx = master.getContext<RateLimitContext>();
+  return ctx.__rateLimitKey;
+}
+
+/**
+ * Get the base rate limit key for the current request (without route pattern).
+ * Example: "ip:192.168.1.1"
+ */
+export function getRateLimitBaseKey(master: masterRequest): string | undefined {
+  const ctx = master.getContext<RateLimitContext>();
+  return ctx.__rateLimitBaseKey;
+}

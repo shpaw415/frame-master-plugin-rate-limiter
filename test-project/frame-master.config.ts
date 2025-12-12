@@ -7,10 +7,14 @@ export default {
   },
   plugins: [
     rateLimiterPlugin({
-      limit: 4,
       message: "Too many requests, please try again later.",
-      windowMs: 10 * 1000, // 10 seconds
-      skip: ["/favicon.ico"],
+      routeLimits: [
+        {
+          limit: 5,
+          pattern: "/protected**",
+          windowMs: 10 * 1000, // 1 minute
+        },
+      ],
     }),
     {
       name: "test-rate-limiter",
