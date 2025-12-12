@@ -410,21 +410,34 @@ export default function rateLimiter(
       before_request: async (master) => {
         // Skip if configured
         if (limiter.shouldSkip(master)) {
+          master.setContext({ __rateLimitSkipped: true });
           return;
         }
 
         // Check rate limit
         const result = limiter.check(master);
 
-        // Apply headers (will be added to response in after_request)
+        // Apply headers
         limiter.applyHeaders(master, result);
 
-        // Store result in context for potential use by other plugins
+        // Store result in context for the request hook and other plugins
         master.setContext({ __rateLimitResult: result });
+      },
+
+      request: async (master) => {
+        // Check if rate limiting was applied
+        const ctx = master.getContext<{
+          __rateLimitResult?: RateLimitResult;
+          __rateLimitSkipped?: boolean;
+        }>();
+
+        if (ctx.__rateLimitSkipped || !ctx.__rateLimitResult) {
+          return;
+        }
 
         // Block if rate limited
-        if (!result.allowed) {
-          limiter.handleRateLimited(master, result);
+        if (!ctx.__rateLimitResult.allowed) {
+          limiter.handleRateLimited(master, ctx.__rateLimitResult);
         }
       },
     },

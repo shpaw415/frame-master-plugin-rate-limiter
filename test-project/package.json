@@ -1,0 +1,19 @@
+{
+  "name": "test-project",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "frame-master": "^3.0.2"
+  },
+  "scripts": {
+    "dev": "NODE_ENV=development bun --hot frame-master dev",
+    "start": "NODE_ENV=production bun frame-master start"
+  }
+}
